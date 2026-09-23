@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+
+# Compiled binaries
+*.o
+process_monitor
+*.out
+
+# IDE/editor files
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.log
