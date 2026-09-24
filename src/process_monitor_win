@@ -1,0 +1,703 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <dirent.h>
+#include <unistd.h>
+#include <signal.h>
+#include <errno.h>
+#include <limits.h>
+#include <time.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
+#define MAX_PROCESSES 4096
+#define NAME_SIZE 256
+
+typedef struct {
+    int pid;
+    int ppid;
+    char state;
+    char name[NAME_SIZE];
+    long memory_kb;
+    unsigned long long cpu_time;
+} Process;
+
+/* ---------------- Utility functions ---------------- */
+
+void clear_screen(void)
+{
+    system("clear");
+}
+
+int is_number(const char *str)
+{
+    if (str == NULL || *str == '\0')
+        return 0;
+
+    for (int i = 0; str[i] != '\0'; i++) {
+        if (!isdigit((unsigned char)str[i]))
+            return 0;
+    }
+    return 1;
+}
+
+/*
+ * Read /proc/PID/stat.
+ *
+ * Format starts with:
+ * PID (comm) state ppid ...
+ *
+ * comm can contain spaces and ')' characters, so we locate the final ')'
+ * before parsing the fields after it.
+ */
+int read_process_stat(int pid, Process *p)
+{
+    char path[128];
+    char line[4096];
+
+    snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+
+    FILE *fp = fopen(path, "r");
+    if (fp == NULL)
+        return 0;
+
+    if (fgets(line, sizeof(line), fp) == NULL) {
+        fclose(fp);
+        return 0;
+    }
+
+    fclose(fp);
+
+    char *open = strchr(line, '(');
+    char *close = strrchr(line, ')');
+
+    if (open == NULL || close == NULL || close <= open)
+        return 0;
+
+    p->pid = pid;
+
+    size_t name_length = (size_t)(close - open - 1);
+    if (name_length >= sizeof(p->name))
+        name_length = sizeof(p->name) - 1;
+
+    memcpy(p->name, open + 1, name_length);
+    p->name[name_length] = '\0';
+
+    /*
+     * After the closing ')' the fields begin with:
+     * state  = field 3
+     * ppid   = field 4
+     *
+     * After state and ppid, we skip fields 5..13.
+     * utime = field 14
+     * stime = field 15
+     */
+    char state;
+    long ppid;
+    unsigned long long utime, stime;
+
+    char *rest = close + 2;
+
+    int result = sscanf(
+        rest,
+        "%c %ld "
+        "%*ld %*ld %*ld %*ld %*ld %*ld %*ld %*ld %*ld "
+        "%llu %llu",
+        &state, &ppid, &utime, &stime
+    );
+
+    if (result != 4)
+        return 0;
+
+    p->state = state;
+    p->ppid = (int)ppid;
+    p->cpu_time = utime + stime;
+
+    return 1;
+}
+
+int read_memory_kb(int pid, long *memory_kb)
+{
+    char path[128];
+    char line[1024];
+
+    snprintf(path, sizeof(path), "/proc/%d/status", pid);
+
+    FILE *fp = fopen(path, "r");
+    if (fp == NULL)
+        return 0;
+
+    *memory_kb = 0;
+
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        if (strncmp(line, "VmRSS:", 6) == 0) {
+            if (sscanf(line + 6, "%ld", memory_kb) == 1) {
+                fclose(fp);
+                return 1;
+            }
+        }
+    }
+
+    fclose(fp);
+    return 1;
+}
+
+int get_process_info(int pid, Process *p)
+{
+    if (!read_process_stat(pid, p))
+        return 0;
+
+    if (!read_memory_kb(pid, &p->memory_kb))
+        return 0;
+
+    return 1;
+}
+
+/* Return total CPU jiffies from /proc/stat. */
+unsigned long long get_total_cpu_jiffies(void)
+{
+    FILE *fp = fopen("/proc/stat", "r");
+    if (fp == NULL)
+        return 0;
+
+    char line[1024];
+    unsigned long long user, nice, system, idle;
+    unsigned long long iowait, irq, softirq, steal;
+
+    if (fgets(line, sizeof(line), fp) == NULL) {
+        fclose(fp);
+        return 0;
+    }
+
+    fclose(fp);
+
+    int result = sscanf(
+        line,
+        "cpu %llu %llu %llu %llu %llu %llu %llu %llu",
+        &user, &nice, &system, &idle,
+        &iowait, &irq, &softirq, &steal
+    );
+
+    if (result < 4)
+        return 0;
+
+    return user + nice + system + idle +
+           iowait + irq + softirq + steal;
+}
+
+/*
+ * Average CPU percentage since the process/system boot accounting period.
+ * This is not an instantaneous CPU measurement.
+ */
+double get_average_cpu_usage(const Process *p)
+{
+    unsigned long long total = get_total_cpu_jiffies();
+
+    if (total == 0)
+        return 0.0;
+
+    long cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
+    if (cpu_count < 1)
+        cpu_count = 1;
+
+    return ((double)p->cpu_time / (double)total) *
+           100.0 * (double)cpu_count;
+}
+
+/*
+ * Current CPU usage over a measurement interval.
+ */
+double get_current_cpu_usage(int pid, int interval_seconds)
+{
+    Process first, second;
+
+    if (!get_process_info(pid, &first))
+        return -1.0;
+
+    unsigned long long total1 = get_total_cpu_jiffies();
+
+    if (total1 == 0)
+        return -1.0;
+
+    sleep((unsigned int)interval_seconds);
+
+    if (!get_process_info(pid, &second))
+        return -1.0;
+
+    unsigned long long total2 = get_total_cpu_jiffies();
+
+    if (total2 <= total1 || second.cpu_time < first.cpu_time)
+        return 0.0;
+
+    unsigned long long process_diff =
+        second.cpu_time - first.cpu_time;
+
+    unsigned long long total_diff =
+        total2 - total1;
+
+    long cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
+    if (cpu_count < 1)
+        cpu_count = 1;
+
+    return ((double)process_diff / (double)total_diff) *
+           100.0 * (double)cpu_count;
+}
+
+/* Log process-control activities. */
+void log_activity(const char *action, int pid)
+{
+    FILE *fp = fopen("process.log", "a");
+
+    if (fp == NULL)
+        return;
+
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+
+    char timestamp[64];
+
+    if (tm_info != NULL)
+        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
+    else
+        strcpy(timestamp, "unknown-time");
+
+    fprintf(fp, "[%s] %s PID=%d\n", timestamp, action, pid);
+
+    fclose(fp);
+}
+
+const char *state_description(char state)
+{
+    switch (state) {
+        case 'R': return "Running";
+        case 'S': return "Sleeping";
+        case 'D': return "Disk Sleep";
+        case 'T': return "Stopped";
+        case 't': return "Tracing Stop";
+        case 'Z': return "Zombie";
+        case 'X': return "Dead";
+        case 'I': return "Idle";
+        default:  return "Unknown";
+    }
+}
+
+void display_process(const Process *p)
+{
+    double cpu = get_average_cpu_usage(p);
+
+    printf("%-8d %-8d %-12s %-25s %-9.2f %-10ld KB\n",
+           p->pid,
+           p->ppid,
+           state_description(p->state),
+           p->name,
+           cpu,
+           p->memory_kb);
+}
+
+/* ---------------- Feature 1: Process Dashboard ---------------- */
+
+void display_processes(void)
+{
+    DIR *dir = opendir("/proc");
+
+    if (dir == NULL) {
+        perror("Cannot open /proc");
+        return;
+    }
+
+    printf("\n");
+    printf("==========================================================================\n");
+    printf("             LINUX PROCESS MONITOR & CONTROL SYSTEM\n");
+    printf("==========================================================================\n\n");
+
+    printf("%-8s %-8s %-12s %-25s %-9s %-12s\n",
+           "PID", "PPID", "STATE", "NAME", "CPU%", "MEMORY");
+
+    printf("--------------------------------------------------------------------------\n");
+
+    struct dirent *entry;
+    int count = 0;
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (!is_number(entry->d_name))
+            continue;
+
+        int pid = atoi(entry->d_name);
+
+        if (pid <= 0)
+            continue;
+
+        Process p;
+
+        if (get_process_info(pid, &p)) {
+            display_process(&p);
+            count++;
+        }
+    }
+
+    closedir(dir);
+
+    printf("--------------------------------------------------------------------------\n");
+    printf("Processes displayed: %d\n", count);
+}
+
+/* ---------------- Feature 2: Process Inspector ---------------- */
+
+void process_inspector(void)
+{
+    int pid;
+
+    printf("\n================ PROCESS INSPECTOR ================\n");
+    printf("Enter PID: ");
+
+    if (scanf("%d", &pid) != 1) {
+        printf("\nInvalid PID.\n");
+        while (getchar() != '\n' && !feof(stdin))
+            ;
+        return;
+    }
+
+    Process p;
+
+    if (!get_process_info(pid, &p)) {
+        printf("\nProcess not found or information unavailable.\n");
+        return;
+    }
+
+    char exe_path[PATH_MAX];
+    char link_path[128];
+
+    snprintf(link_path, sizeof(link_path),
+             "/proc/%d/exe", pid);
+
+    ssize_t length = readlink(link_path, exe_path, sizeof(exe_path) - 1);
+
+    if (length >= 0) {
+        exe_path[length] = '\0';
+    } else {
+        strcpy(exe_path, "Not available");
+    }
+
+    printf("\n---------------------------------------------------\n");
+    printf("Process Information\n");
+    printf("---------------------------------------------------\n");
+    printf("PID          : %d\n", p.pid);
+    printf("PPID         : %d\n", p.ppid);
+    printf("Name         : %s\n", p.name);
+    printf("State        : %s (%c)\n",
+           state_description(p.state), p.state);
+    printf("Memory       : %ld KB\n", p.memory_kb);
+    printf("CPU Time     : %llu jiffies\n", p.cpu_time);
+    printf("CPU Usage    : %.2f%% (average)\n",
+           get_average_cpu_usage(&p));
+    printf("Executable   : %s\n", exe_path);
+    printf("---------------------------------------------------\n");
+}
+
+/* ---------------- Feature 3: Process Control ---------------- */
+
+void process_control(void)
+{
+    int pid;
+    int choice;
+    int signal_number = 0;
+
+    printf("\n================ PROCESS CONTROL ==================\n");
+    printf("Enter PID: ");
+
+    if (scanf("%d", &pid) != 1 || pid <= 0) {
+        printf("\nInvalid PID.\n");
+        while (getchar() != '\n' && !feof(stdin))
+            ;
+        return;
+    }
+
+    printf("\nSelect Action:\n");
+    printf("1. Stop Process (SIGSTOP)\n");
+    printf("2. Continue Process (SIGCONT)\n");
+    printf("3. Terminate Process (SIGTERM)\n");
+    printf("4. Force Kill Process (SIGKILL)\n");
+    printf("5. Cancel\n");
+
+    printf("\nEnter choice: ");
+
+    if (scanf("%d", &choice) != 1) {
+        printf("\nInvalid choice.\n");
+        while (getchar() != '\n' && !feof(stdin))
+            ;
+        return;
+    }
+
+    switch (choice) {
+        case 1:
+            signal_number = SIGSTOP;
+            break;
+
+        case 2:
+            signal_number = SIGCONT;
+            break;
+
+        case 3:
+            signal_number = SIGTERM;
+            break;
+
+        case 4:
+            signal_number = SIGKILL;
+            break;
+
+        case 5:
+            printf("\nOperation cancelled.\n");
+            return;
+
+        default:
+            printf("\nInvalid choice.\n");
+            return;
+    }
+
+    if (kill(pid, signal_number) == 0) {
+        const char *action;
+
+        switch (signal_number) {
+            case SIGSTOP: action = "SIGSTOP sent"; break;
+            case SIGCONT: action = "SIGCONT sent"; break;
+            case SIGTERM: action = "SIGTERM sent"; break;
+            case SIGKILL: action = "SIGKILL sent"; break;
+            default:      action = "Signal sent"; break;
+        }
+
+        printf("\nSignal sent successfully to PID %d.\n", pid);
+        log_activity(action, pid);
+    } else {
+        perror("\nUnable to control process");
+    }
+}
+
+/* ---------------- Feature 4: Process Creation & Launch ---------------- */
+
+void process_creation(void)
+{
+    char command[256];
+
+    printf("\n=============== PROCESS CREATION ==================\n");
+    printf("Enter command to launch: ");
+
+    if (scanf(" %255[^\n]", command) != 1) {
+        printf("\nInvalid command.\n");
+        return;
+    }
+
+    printf("\nLaunching: %s\n", command);
+
+    pid_t pid = fork();
+
+    if (pid < 0) {
+        perror("fork failed");
+        return;
+    }
+
+    if (pid == 0) {
+        /*
+         * Child process replaces itself with /bin/sh -c command.
+         */
+        execl("/bin/sh", "sh", "-c", command, (char *)NULL);
+
+        perror("exec failed");
+        _exit(EXIT_FAILURE);
+    }
+
+    printf("Created process with PID: %d\n", pid);
+    printf("Process launched successfully.\n");
+}
+
+/* ---------------- Feature 5: Live Process Monitoring ---------------- */
+
+void live_monitoring(void)
+{
+    int pid;
+    int seconds;
+
+    printf("\n=============== LIVE MONITORING ==================\n");
+
+    printf("Enter PID to monitor: ");
+
+    if (scanf("%d", &pid) != 1 || pid <= 0) {
+        printf("\nInvalid PID.\n");
+        while (getchar() != '\n' && !feof(stdin))
+            ;
+        return;
+    }
+
+    printf("Enter monitoring duration (seconds): ");
+
+    if (scanf("%d", &seconds) != 1 || seconds <= 0) {
+        printf("\nInvalid duration.\n");
+        while (getchar() != '\n' && !feof(stdin))
+            ;
+        return;
+    }
+
+    printf("\nMonitoring PID %d...\n", pid);
+
+    for (int i = 0; i < seconds; i++) {
+        Process p;
+
+        if (!get_process_info(pid, &p)) {
+            printf("[Monitor %d/%d] PID %d is no longer available.\n",
+                   i + 1, seconds, pid);
+            break;
+        }
+
+        double cpu = get_current_cpu_usage(pid, 1);
+
+        if (cpu < 0.0) {
+            printf("[Monitor %d/%d] PID: %d | Name: %s | State: %s\n",
+                   i + 1, seconds,
+                   pid,
+                   p.name,
+                   state_description(p.state));
+        } else {
+            /*
+             * get_current_cpu_usage already waits one second.
+             * Therefore the loop advances approximately one second
+             * per measurement.
+             */
+            if (!get_process_info(pid, &p)) {
+                printf("PID %d ended during monitoring.\n", pid);
+                break;
+            }
+
+            printf("[Monitor %d/%d] PID: %d | Name: %s | "
+                   "State: %s | CPU: %.2f%% | Memory: %ld KB\n",
+                   i + 1, seconds,
+                   p.pid,
+                   p.name,
+                   state_description(p.state),
+                   cpu,
+                   p.memory_kb);
+        }
+    }
+
+    printf("\nMonitoring complete.\n");
+}
+
+/* ---------------- Feature 6: Process Tree ---------------- */
+
+void process_tree(void)
+{
+    DIR *dir = opendir("/proc");
+
+    if (dir == NULL) {
+        perror("Unable to open /proc");
+        return;
+    }
+
+    printf("\n=============== PROCESS TREE =====================\n\n");
+    printf("%-9s %-9s %-12s %s\n",
+           "PID", "PPID", "STATE", "PROCESS");
+    printf("--------------------------------------------------------------\n");
+
+    struct dirent *entry;
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (!is_number(entry->d_name))
+            continue;
+
+        int pid = atoi(entry->d_name);
+
+        if (pid <= 0)
+            continue;
+
+        Process p;
+
+        if (get_process_info(pid, &p)) {
+            printf("%-9d %-9d %-12s %s\n",
+                   p.pid,
+                   p.ppid,
+                   state_description(p.state),
+                   p.name);
+        }
+    }
+
+    closedir(dir);
+
+    printf("--------------------------------------------------------------\n");
+    printf("PID and PPID show the parent-child process relationship.\n");
+}
+
+/* ---------------- Main Menu ---------------- */
+
+void menu(void)
+{
+    int choice;
+
+    while (1) {
+        printf("\n");
+        printf("===============================================================\n");
+        printf("        LINUX PROCESS MONITOR & CONTROL SYSTEM\n");
+        printf("===============================================================\n");
+        printf("\n");
+        printf("[1] Process Dashboard\n");
+        printf("[2] Process Inspector\n");
+        printf("[3] Process Control\n");
+        printf("[4] Process Creation & Launch\n");
+        printf("[5] Live Process Monitoring\n");
+        printf("[6] Process Tree\n");
+        printf("[7] Refresh Dashboard\n");
+        printf("[8] Exit\n");
+
+        printf("\nEnter your choice: ");
+
+        if (scanf("%d", &choice) != 1) {
+            printf("\nInvalid input. Please enter a number.\n");
+            while (getchar() != '\n' && !feof(stdin))
+                ;
+            continue;
+        }
+
+        switch (choice) {
+            case 1:
+                clear_screen();
+                display_processes();
+                break;
+
+            case 2:
+                process_inspector();
+                break;
+
+            case 3:
+                process_control();
+                break;
+
+            case 4:
+                process_creation();
+                break;
+
+            case 5:
+                live_monitoring();
+                break;
+
+            case 6:
+                process_tree();
+                break;
+
+            case 7:
+                clear_screen();
+                display_processes();
+                break;
+
+            case 8:
+                printf("\nExiting Process Monitor.\n");
+                return;
+
+            default:
+                printf("\nInvalid choice. Please try again.\n");
+        }
+    }
+}
+
+int main(void)
+{
+    menu();
+    return 0;
+}
