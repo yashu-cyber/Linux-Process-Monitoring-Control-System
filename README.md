@@ -1,274 +1,295 @@
 # Linux Process Monitoring and Control System
 
-A React interface around the existing Linux C process monitor. The C program remains the OS-facing layer: it reads `/proc`, forks and execs permitted child processes, sends Linux signals, reads and changes nice values, and records lifecycle events. Express validates requests and bridges the browser to the compiled C executable.
+A terminal-based system programming application developed in C for monitoring, inspecting, creating, and controlling processes using operating-system process management mechanisms.
 
-## Architecture
+## Overview
 
-```text
-Windows browser (or Linux browser)
-          |
-          | HTTP / JSON, localhost:5173
-          v
-React + TypeScript + Vite + Tailwind + Recharts
-          |
-          | Vite development proxy: /api -> 127.0.0.1:3001
-          v
-Node.js + Express (run inside Ubuntu / WSL)
-          |
-          | spawn(ELF executable, fixed argument arrays; shell disabled)
-          v
-process_monitor.c --api <operation>
-          |
-          v
-Linux kernel, /proc, fork/exec, signals, nice values
-```
+The Linux Process Monitoring and Control System is a command-line application designed to demonstrate practical Operating Systems and System Programming concepts.
 
-The C program's original interactive menu remains the default when it is run without `--api`. The web server invokes that same program with a small JSON mode. The browser cannot execute operating-system commands. The API does not accept arbitrary shell strings: launch is restricted to `sleep` with a validated duration and `yes` (automatically terminated after 20 seconds). File creation accepts a simple filename and uses exclusive creation, so an existing file is not overwritten.
+The application provides a central interface for discovering running processes, inspecting process information, creating new processes, monitoring processes during execution, controlling processes using signals, and representing parent-child process relationships.
+
+The project focuses on user-space system programming and demonstrates process-management mechanisms such as `fork()`, `exec()`, signals, process identification, and periodic monitoring.
+
+## Objectives
+
+- Discover and display running processes.
+- Inspect information about a selected process.
+- Create and launch new processes.
+- Monitor a running process over a selected period.
+- Control processes using operating-system signals.
+- Demonstrate process creation using `fork()`.
+- Demonstrate program execution using `exec()`.
+- Provide a practical terminal-based demonstration of process management.
+
+## Features
+
+### 1. Process Dashboard / Process Discovery
+
+The Process Dashboard is the main entry point of the application.
+
+It displays information about currently running processes, including:
+
+- Process ID (PID)
+- Process name
+- Total process count
+- Available process-state information
+
+The dashboard can be refreshed to obtain an updated process list.
+
+### 2. Process Inspector
+
+The Process Inspector allows the user to inspect a selected process using its PID.
+
+The current implementation displays:
+
+- Process ID
+- Process name
+- Executable path
+
+On the Linux target environment, the inspector is designed to obtain additional process information through the `/proc/<PID>/` interface.
+
+### 3. Process Control
+
+The Process Control module allows the user to control a selected process using operating-system signals.
+
+Available operations:
+
+- Stop Process
+- Continue Process
+- Terminate Process
+- Force Kill Process
+- Cancel
+
+The implementation demonstrates the following signals:
+
+- `SIGSTOP`
+- `SIGCONT`
+- `SIGTERM`
+- `SIGKILL`
+
+These operations demonstrate how a user-space application can communicate with and control running processes through the operating system.
+
+### 4. Process Creation and Launch
+
+The Process Creation and Launch module allows the user to enter a command and launch it as a new process.
+
+The implementation demonstrates:
+
+- `fork()`
+- `exec()`
+
+Example:
+
+~~~bash
+sleep 60
+~~~
+
+The newly created process can then be discovered through the Process Dashboard and used for inspection, monitoring, and control.
+
+### 5. Live Process Monitoring
+
+The Live Process Monitoring module periodically checks a selected process while it is running.
+
+The user specifies:
+
+- Process ID
+- Monitoring duration
+
+The application performs periodic checks and displays the process status during the monitoring period.
+
+This allows the user to observe process behavior while the process is active.
+
+### 6. Process Tree
+
+The Process Tree module provides the foundation for representing parent-child relationships between processes.
+
+The Linux implementation is intended to use:
+
+- PID
+- PPID
+- `/proc`
+- Parent-child process relationships
+
+The current development version provides the process-tree interface and process-list foundation. Complete hierarchical PID/PPID traversal is reserved for the Linux-specific implementation.
+
+## Operating System Concepts Demonstrated
+
+| Operating System Concept | Demonstration |
+|---|---|
+| Process Identification | Process discovery using PIDs |
+| Process Creation | `fork()` |
+| Program Execution | `exec()` |
+| Process Control | Linux/POSIX signals |
+| Process Monitoring | Periodic process observation |
+| Parent-Child Relationships | PID and PPID |
+| User-Space System Programming | Terminal-based OS interaction |
+| Linux Process Information | `/proc` interface |
+
+## Technologies Used
+
+- **Language:** C
+- **System Programming:** POSIX/Linux process-management concepts
+- **Target Platform:** Linux / Ubuntu
+- **Compiler:** GCC / Clang
+- **Process Information:** Linux `/proc`
+- **Version Control:** Git
+- **Repository:** GitHub
 
 ## Project Structure
 
-```text
-.
-├── process_monitor.c                 Existing C implementation and opt-in JSON mode
-├── c_backend/
-│   └── Makefile                      Builds the C executable from the root source
-├── backend/
-│   ├── src/server.ts                 Express API routes and shutdown
-│   ├── src/processMonitorService.ts  Validated C process bridge and live services
-│   ├── smoke-test.mjs                HTTP integration smoke tests
-│   ├── package.json
-│   └── tsconfig.json
-├── frontend/
-│   ├── src/App.tsx                   All 12 application features
-│   ├── src/main.tsx
-│   ├── src/styles.css
-│   ├── index.html
-│   ├── vite.config.ts                Development API proxy
-│   ├── tailwind.config.js
-│   ├── postcss.config.js
-│   ├── package.json
-│   └── tsconfig.json
-└── README.md
-```
+~~~text
+Linux-Process-Monitoring-Control-System/
+├── src/
+│   └── process_monitor.c
+├── screenshots/
+├── docs/
+│   ├── ABSTRACT.md
+│   └── REPORT.md
+├── Makefile
+├── README.md
+└── .gitignore
+~~~
 
-The C executable is generated at `c_backend/process_monitor`. Runtime lifecycle records are appended to `process_events.log` in the project root. These generated files and dependency/build directories are excluded by `.gitignore`.
+## Compilation
 
-## Requirements
+The project includes a Makefile for building the application.
 
-- Ubuntu on WSL 2 (or another Linux distribution with `/proc`)
-- GCC and Make (`build-essential`)
-- Node.js 18 or newer and npm
-- Windows Chrome, Edge, or another browser when using WSL
+~~~bash
+make
+~~~
 
-The C executable is a Linux ELF binary. Compile and run the Node API inside Linux/WSL; a Windows Node process cannot spawn that ELF binary. The frontend can run in WSL or Windows. The steps below run both servers in WSL and open the page in a Windows browser.
+The application can also be compiled manually:
 
-## Install
+~~~bash
+clang src/process_monitor.c -o process_monitor
+~~~
 
-Open Ubuntu from Windows Terminal or VS Code's WSL terminal:
+## Running the Application
 
-```bash
-sudo apt update
-sudo apt install -y build-essential nodejs npm
-gcc --version
-node --version
-npm --version
-```
+Using the Makefile:
 
-Build the existing C source:
+~~~bash
+make run
+~~~
 
-```bash
-cd "/mnt/d/3Linux-Process-Monitoring-and-Control-System - Copy"
-make -C c_backend
-```
+Or directly:
 
-This compiles `process_monitor.c` with GCC and leaves the original C source intact. To use the original terminal menu at any time:
+~~~bash
+./process_monitor
+~~~
 
-```bash
-./c_backend/process_monitor
-```
+## Main Menu
 
-## Run the Website
+~~~text
+[1] Process Dashboard
+[2] Process Inspector
+[3] Process Control
+[4] Process Creation & Launch
+[5] Live Process Monitoring
+[6] Process Tree
+[7] Refresh Dashboard
+[8] Exit
+~~~
 
-Use two Ubuntu/WSL terminals from the project root.
+## Demonstration Workflow
 
-Terminal 1, API and C bridge:
+~~~text
+Process Creation
+       ↓
+Create a controlled process
+       ↓
+Process Dashboard
+       ↓
+Discover the process
+       ↓
+Process Inspector
+       ↓
+Inspect process information
+       ↓
+Live Process Monitoring
+       ↓
+Observe the running process
+       ↓
+Process Control
+       ↓
+Stop / Continue / Terminate
+       ↓
+Refresh Dashboard
+       ↓
+Verify process state
+~~~
 
-```bash
-cd "/mnt/d/3Linux-Process-Monitoring-and-Control-System - Copy/backend"
-npm install
-npm run dev
-```
+## Testing
 
-The API listens on `127.0.0.1:3001`. Keep this terminal running.
+Controlled processes such as `sleep 60` and `sleep 120` were used during testing.
 
-Terminal 2, React frontend:
+| Feature | Test Performed | Result |
+|---|---|---|
+| Process Dashboard | Display running processes | PASS |
+| Process Inspector | Inspect selected PID | PASS |
+| Process Control | Stop / Continue / Terminate | PASS |
+| Process Creation | Launch `sleep` process | PASS |
+| Live Process Monitoring | Monitor running process | PASS |
+| Process Tree | Process listing/interface | PARTIAL |
 
-```bash
-cd "/mnt/d/3Linux-Process-Monitoring-and-Control-System - Copy/frontend"
-npm install
-npm run dev
-```
+### Process Control Test
 
-Open **http://localhost:5173** in Windows Chrome, Edge, or Brave. Vite forwards `/api` requests to the backend in WSL. WSL 2 localhost forwarding is enabled by default on current Windows installations.
+A controlled `sleep` process was used to safely test signal-based process management.
 
-If Windows cannot reach the WSL servers through `localhost`, check that WSL 2 is current and localhost forwarding is enabled in `%UserProfile%\.wslconfig`:
+The process was:
 
-```ini
-[wsl2]
-localhostForwarding=true
-```
+1. Created using the Process Creation module.
+2. Stopped using `SIGSTOP`.
+3. Continued using `SIGCONT`.
+4. Terminated using `SIGTERM`.
+5. Verified through the dashboard after termination.
 
-Then run `wsl --shutdown`, reopen Ubuntu, and start both servers again. Keep the API bound to its default loopback address; do not expose this process-control API to an untrusted network.
+## Platform Note
 
-## Build and Test
+Development and initial testing were performed on macOS using the available process-management APIs.
 
-Build the C executable:
+The intended target environment for the project is Linux/Ubuntu because the project requirements emphasize Linux/POSIX system programming and Linux interfaces such as the `/proc` filesystem.
 
-```bash
-make -C c_backend
-```
-
-Build/type-check the backend:
-
-```bash
-cd backend
-npm install
-npm run build
-```
-
-Build/type-check the frontend:
-
-```bash
-cd frontend
-npm install
-npm run build
-```
-
-With the API running, execute the integration smoke tests from another terminal:
-
-```bash
-cd backend
-npm run test:smoke
-```
-
-The smoke tests use real Linux processes, exercise process signals and resource counters, check the lifecycle log and watchdog, reject unsafe inputs, and clean up the test processes and temporary file.
-
-## API
-
-All endpoints are served from `http://localhost:3001/api`:
-
-| Method | Endpoint | Purpose |
-| --- | --- | --- |
-| `GET` | `/system/status` | Linux process count, CPU ticks, memory totals, and backend status |
-| `GET` | `/processes` | Live `/proc` process list |
-| `GET` | `/processes/created` | Still-running processes launched by this API session |
-| `GET` | `/processes/:pid` | Process name, path, PID/PPID, state, owner, memory, CPU-time counters |
-| `GET` | `/processes/:pid/resources` | Current CPU sample, RSS, user time, and system time |
-| `POST` | `/processes/:pid/control` | `stop`, `continue`, `terminate`, or `kill` action |
-| `POST` | `/processes/create` | Allowlisted `sleep`/`yes` launch or safe file-creation process |
-| `GET` | `/process-tree` | Live PID/PPID rows for the process tree |
-| `GET` | `/processes/:pid/priority` | Current Linux nice value |
-| `POST` | `/processes/:pid/priority` | Change the nice value by one step (`delta: -1` or `1`) |
-| `POST` | `/watchdog` | Start a PID/CPU-threshold/duration watchdog |
-| `GET` | `/watchdog/:id` | Current watchdog status and latest measured values |
-| `POST` | `/watchdog/:id/stop` | Stop a watchdog |
-| `POST` | `/lifecycle/start` | Start the C lifecycle snapshot logger for a bounded duration |
-| `GET` | `/lifecycle/events` | Read saved `process_events.log` and live events |
-| `POST` | `/application/refresh` | Refresh process rows and system counters |
-| `POST` | `/application/exit` | Stop the API and send SIGTERM to processes created by this session |
-
-Process-control actions from the website require confirmation. Invalid inputs return structured JSON errors with appropriate HTTP status codes; stack traces are not sent to the browser.
-
-## C Integration
-
-The terminal application is unchanged as the default. The additive `--api` mode accepts fixed operations and emits JSON on standard output, for example:
-
-```bash
-./c_backend/process_monitor --api metrics
-./c_backend/process_monitor --api list
-./c_backend/process_monitor --api inspect 1
-./c_backend/process_monitor --api priority 1
-./c_backend/process_monitor --api control 1234 stop
-./c_backend/process_monitor --api launch sleep 30
-./c_backend/process_monitor --api create-file demo-output.txt
-./c_backend/process_monitor --api lifecycle 10
-./c_backend/process_monitor --api events
-```
-
-The Node service uses `child_process.spawn` with an argument array and `shell: false`; it never forwards browser-provided shell text. The C layer owns `/proc` reads, `fork`/`exec`, file creation, signal delivery, nice-value operations, and lifecycle snapshots. Node computes interval CPU percentages from successive C CPU-time counters, manages bounded sampling/watchdog sessions, and serves the React API. Lifecycle logging continues to append to the original `process_events.log` in the project root.
-
-## Demonstrating the 12 Features
-
-1. **Process Dashboard:** open the homepage; the process table refreshes every 1.5 seconds and shows actual PIDs from `/proc`; use search, filter, sort, paginate, and select.
-2. **Process Inspector:** select a table row or enter its PID to view its `/proc` identity, parent, executable, state, owner, memory, and CPU times.
-3. **Process Control:** enter/select a PID and send STOP, CONTINUE, TERMINATE, or KILL; confirm before every signal.
-4. **Process Creation & Launch:** launch `sleep` (1–3600 seconds) or `yes` (auto-terminated after 20 seconds), or create a new file with a separate C child process.
-5. **Live Process Monitoring:** select a PID and duration to sample status, CPU, and memory at one-second intervals.
-6. **Process Tree:** expand real parent/child relationships; search PIDs/names, select a process, and zoom the view.
-7. **Resource Monitor:** chart live CPU, resident memory, user CPU time, and system CPU time for a PID.
-8. **Priority & Scheduling:** read the nice value and request a one-step increase/decrease; see the actual value read back or a permission error.
-9. **Watchdog & Alerts:** set PID, CPU threshold, and duration; observe Normal, Warning, High, or process-exited state.
-10. **Lifecycle / Event Logger:** start bounded C snapshot logging, observe STARTED/TERMINATED events, download CSV, clear the UI view, or refresh. The persisted C log is not deleted by clearing the UI.
-11. **Refresh Dashboard:** select the sidebar or header refresh control to reload processes, host counters, created-process count, and last-update time.
-12. **Exit:** select Exit Application and confirm. The Node backend shuts down and sends SIGTERM to app-created processes; the terminal C menu is a separate process and is not stopped.
-
-## Cross-Interface Verification
-
-Keep the API and frontend running as described above. In a third Ubuntu/WSL terminal, create a real Linux process:
-
-```bash
-sleep 300 &
-PID=$!
-echo "Test PID: $PID"
-```
-
-The website dashboard should show that PID within about two seconds. Use **Process Control** to stop and continue it; verify each transition in Ubuntu:
-
-```bash
-ps -o pid,state,comm -p "$PID"
-```
-
-State `T` means stopped. After Continue, the process should return to a non-`T` state (usually `S` for `sleep`). Use **Terminate** in the website and confirm that `ps -p "$PID"` returns no process.
-
-For the reverse direction, create another fixture and signal it from Ubuntu:
-
-```bash
-sleep 300 &
-PID=$!
-kill -STOP "$PID"
-ps -o pid,state,comm -p "$PID"
-kill -CONT "$PID"
-ps -o pid,state,comm -p "$PID"
-kill "$PID"
-```
-
-The dashboard should show the stopped and resumed states on its next poll, and remove the process after it exits. The automated Linux smoke test exercises this same shared-kernel path with a child process spawned outside the C application registry:
-
-```bash
-cd "/mnt/d/3Linux-Process-Monitoring-and-Control-System - Copy/backend"
-npm run test:smoke
-```
-
-## Screenshots
-
-The dashboard is designed for a live demonstration. Open the running page at `http://localhost:5173` to capture the dashboard and feature views with real WSL process data.
-
-## Troubleshooting
-
-- **C executable missing:** from the project root run `make -C c_backend`; the service also supports `PROCESS_MONITOR_BIN` if the binary is stored elsewhere.
-- **Node API reports disconnected:** start the backend from the `backend` directory in Ubuntu/WSL and check that port `3001` is available.
-- **Frontend cannot reach the API:** use `http://localhost:5173`, keep both servers running in WSL, and confirm `localhostForwarding=true` for WSL 2.
-- **Permission denied for a process:** Linux users can control or reprioritize only processes permitted by the kernel. Run the backend with appropriate privileges only when required; avoid running it as root for routine demonstrations.
-- **Process no longer exists:** a process may terminate between table refresh and action. Refresh the dashboard and select a current PID.
-- **File already exists:** the creation operation will not overwrite it; choose another simple filename.
-- **Lifecycle events are missing:** the logger detects changes after its initial snapshot; start it before creating or ending the process you want to demonstrate.
-- **Slow initial build on a Windows-mounted WSL directory:** run the project inside the WSL Linux filesystem for better file watching and build performance.
+Linux-specific functionality such as complete `/proc/<PID>/` process inspection and complete hierarchical PID/PPID process-tree traversal is therefore reserved for the Linux target implementation.
 
 ## Limitations
 
-- CPU percentage is an interval sample and can be unavailable until a second sample arrives. Per-process values can exceed 100% when multiple CPU cores are used.
-- Linux may restrict executable paths and process details for other users. Process names from `/proc/<pid>/comm` follow the kernel's short-name limit.
-- The process tree is a current PID/PPID snapshot, not a kernel event stream; entries can change between refreshes.
-- Watchdog and lifecycle sampling use one-second intervals, so very short-lived events between snapshots may not be observed.
-- The API process-ownership list is in memory. It tracks processes created in the current backend session; shutdown cleans up that session's tracked processes.
-- The web launch allowlist is deliberately small. Add new programs as explicit C API operations with validation rather than enabling general shell execution.
+- Initial development and testing were performed on macOS.
+- Complete Linux `/proc/<PID>/` integration is not implemented in the current development version.
+- Complete hierarchical PID/PPID traversal is not implemented in the current Process Tree module.
+- Process-state information is platform-dependent during macOS development.
+- Advanced CPU and memory graphs are not included.
+- The application is intentionally terminal-based.
+
+## Future Improvements
+
+- Complete Linux `/proc/<PID>/` integration.
+- Full hierarchical process-tree traversal.
+- CPU and memory utilization monitoring.
+- Process filtering and sorting.
+- Additional process statistics.
+- Improved Linux-specific process-state detection.
+- More detailed resource monitoring.
+
+## Documentation
+
+Additional documentation is available in the `docs/` directory:
+
+- `ABSTRACT.md` — Project abstract
+- `REPORT.md` — Detailed project report
+
+## Academic Purpose
+
+This project was developed as a practical implementation of Operating Systems and System Programming concepts.
+
+It demonstrates how user-space applications can interact with operating-system process mechanisms to create, execute, monitor, and control processes.
+
+## Conclusion
+
+The Linux Process Monitoring and Control System combines process discovery, process inspection, process creation, live monitoring, signal-based process control, and a process-tree interface into a single terminal-based system-programming application.
+
+The project provides a practical foundation for understanding process management and Linux system programming while allowing further extension with Linux-specific process information and resource-monitoring capabilities.
+
+## License
+
+This project was developed for academic and educational purposes.
