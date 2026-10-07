@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <signal.h>
 #include <sys/resource.h>
+#include <sched.h>
 #include <errno.h>
 #include <time.h>
 #include <dirent.h>
@@ -1864,7 +1865,7 @@ static int api_dispatch(int argc, char **argv) {
         return api_lifecycle_start((int)duration);
     }
     if ((strcmp(operation, "inspect") == 0 || strcmp(operation, "priority") == 0 ||
-         strcmp(operation, "control") == 0) && argc >= 4) {
+         strcmp(operation, "scheduling") == 0 || strcmp(operation, "control") == 0) && argc >= 4) {
         char *end = NULL;
         long parsed_pid = strtol(argv[3], &end, 10);
         if (end == argv[3] || *end != '\0' || parsed_pid < 1 || parsed_pid > INT_MAX)
@@ -1907,15 +1908,56 @@ static int api_dispatch(int argc, char **argv) {
                 if (delta_end == argv[4] || *delta_end != '\0' || delta < -1 || delta > 1 || delta == 0)
                     return api_error("Priority adjustment must be -1 or 1.");
                 int adjusted = priority + (int)delta;
-                if (adjusted < -20) adjusted = -20;
-                if (adjusted > 19) adjusted = 19;
+                if (adjusted < -20 || adjusted > 19)
+                    return api_error(adjusted < -20
+                        ? "Nice value is already at the minimum of -20."
+                        : "Nice value is already at the maximum of 19.");
                 if (setpriority(PRIO_PROCESS, pid, adjusted) != 0)
-                    return api_error(errno == EACCES || errno == EPERM ? "Permission denied changing process priority." : "Unable to change process priority.");
+                    return api_error(errno == EACCES || errno == EPERM
+                        ? "Permission denied changing process priority. Linux requires CAP_SYS_NICE or an applicable RLIMIT_NICE to lower a nice value."
+                        : "Unable to change process priority.");
                 errno = 0;
                 priority = getpriority(PRIO_PROCESS, pid);
                 if (errno != 0) return api_error("Priority changed but could not be read back.");
             }
             printf("{\"pid\":%d,\"priority\":%d}\n", pid, priority);
+            return 0;
+        }
+        if (strcmp(operation, "scheduling") == 0 && (argc == 4 || argc == 5)) {
+            int policy = sched_getscheduler(pid);
+            if (policy < 0)
+                return api_error(errno == EACCES || errno == EPERM
+                    ? "Permission denied reading process scheduling policy."
+                    : "Unable to read process scheduling policy.");
+
+            if (argc == 5) {
+                int requested_policy;
+                if (strcmp(argv[4], "normal") == 0) requested_policy = SCHED_OTHER;
+                else if (strcmp(argv[4], "batch") == 0) requested_policy = SCHED_BATCH;
+                else return api_error("Choose the normal or batch scheduling policy.");
+
+                struct sched_param parameters = { .sched_priority = 0 };
+                if (policy == SCHED_IDLE)
+                    return api_error("Permission denied: leaving SCHED_IDLE requires CAP_SYS_NICE. Restart the process or use an administrator-authorized monitor.");
+                if (sched_setscheduler(pid, requested_policy, &parameters) != 0)
+                    return api_error(errno == EACCES || errno == EPERM
+                        ? "Permission denied changing process scheduling policy."
+                        : "Unable to change process scheduling policy.");
+                policy = sched_getscheduler(pid);
+                if (policy < 0) return api_error("Scheduling policy changed but could not be read back.");
+            }
+
+            const char *policy_name = policy == SCHED_BATCH ? "batch"
+                : policy == SCHED_IDLE ? "idle"
+                : policy == SCHED_OTHER ? "normal" : "other";
+            const char *policy_label = policy == SCHED_BATCH ? "Batch"
+                : policy == SCHED_IDLE ? "Idle"
+                : policy == SCHED_OTHER ? "Normal" : "Other";
+            printf("{\"pid\":%d,\"policy\":", pid);
+            json_string(policy_name);
+            printf(",\"policyLabel\":");
+            json_string(policy_label);
+            printf("}\n");
             return 0;
         }
     }

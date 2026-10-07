@@ -15,13 +15,37 @@ type ProcessInfo = {
   pid: number; ppid: number; name: string; state: string; stateLabel: string;
   cpuPercent: number | null; cpuTimeNs: number; userTimeNs: number; systemTimeNs: number;
   memoryBytes: number; uid: number; user: string; startTimeUnix: number; executablePath?: string;
+  command: string; memoryPercent: number | null; threadCount: number | null;
 };
 type SystemStatus = {
   processCount: number; cpuPercent: number | null; memoryPercent: number | null;
   memoryTotalBytes: number; memoryAvailableBytes: number; backend: string;
   system: string; updatedAt: string;
 };
-type ResourcePoint = { time: string; cpu: number | null; memory: number; user: number; system: number };
+type SystemResourcePoint = {
+  time: string; cpu: number | null; memory: number | null; swap: number | null;
+  load: number | null; diskRead: number | null; diskWrite: number | null;
+  networkReceived: number | null; networkSent: number | null;
+};
+type SystemResources = {
+  processCount: number; cpuPercent: number | null; cpuCores: { name: string; cpuPercent: number | null }[];
+  memoryTotalBytes: number; memoryUsedBytes: number; memoryAvailableBytes: number; memoryFreeBytes: number;
+  memoryPercent: number | null; swapTotalBytes: number; swapUsedBytes: number; swapFreeBytes: number;
+  swapPercent: number | null; diskTotalBytes: number; diskUsedBytes: number; diskAvailableBytes: number;
+  diskReadBytesPerSecond: number | null; diskWriteBytesPerSecond: number | null;
+  networkReceivedBytesPerSecond: number | null; networkSentBytesPerSecond: number | null;
+  loadAverage: number[]; updatedAt: string;
+};
+type ProcessResourceSample = {
+  pid: number; name: string; state: string; cpuPercent: number | null;
+  memoryBytes: number; userTimeNs: number; systemTimeNs: number; updatedAt: string;
+};
+type ProcessTelemetryPoint = {
+  time: string; cpu: number | null; memory: number | null;
+  userTime: number | null; systemTime: number | null;
+};
+type SchedulingPolicy = "normal" | "batch" | "idle" | "other";
+type SettableSchedulingPolicy = "normal" | "batch";
 type LifecycleEvent = { timestamp: string; event: string; pid: number; name: string };
 type Watchdog = { id: string; pid: number; threshold: number; duration: number; elapsed: number; running: boolean; status: string; cpuPercent: number | null; memoryBytes: number; updatedAt: string };
 type Toast = { id: number; message: string; type: "success" | "error" | "info" };
@@ -35,6 +59,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${API}${path}`, {
+      cache: "no-store",
       ...options,
       headers: { "Content-Type": "application/json", ...options?.headers },
     });
@@ -126,11 +151,11 @@ function ConfirmDialog({ title, detail, confirmLabel, onConfirm, onCancel, dange
 function ProcessTable({ processes, onSelect }: { processes: ProcessInfo[]; onSelect: (process: ProcessInfo) => void }) {
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState("all");
-  const [sortKey, setSortKey] = useState<"pid" | "name" | "cpuPercent" | "memoryBytes">("cpuPercent");
+  const [sortKey, setSortKey] = useState<"pid" | "name" | "cpuPercent" | "memoryBytes" | "memoryPercent" | "threadCount" | "startTimeUnix">("cpuPercent");
   const [descending, setDescending] = useState(true);
   const [page, setPage] = useState(0);
   const filtered = processes.filter((item) => {
-    const matchesText = `${item.pid} ${item.name} ${item.user}`.toLowerCase().includes(query.toLowerCase());
+    const matchesText = `${item.pid} ${item.name} ${item.command} ${item.user}`.toLowerCase().includes(query.toLowerCase());
     return matchesText && (stateFilter === "all" || item.stateLabel.toLowerCase() === stateFilter);
   }).sort((left, right) => {
     const first = left[sortKey] ?? -1;
@@ -148,7 +173,7 @@ function ProcessTable({ processes, onSelect }: { processes: ProcessInfo[]; onSel
   return <section className="data-panel">
     <div className="table-heading"><div><h2>Process table</h2><span>{filtered.length.toLocaleString()} processes in current view</span></div>
       <div className="table-tools">
-        <label className="search-box"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search PID, name, user" /></label>
+        <label className="search-box"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search PID, command, user" /></label>
         <label className="select-box"><ListFilter size={14} /><select value={stateFilter} onChange={(event) => setStateFilter(event.target.value)}>
           <option value="all">All states</option><option value="running">Running</option><option value="sleeping">Sleeping</option><option value="stopped">Stopped</option><option value="zombie">Zombie</option>
         </select></label>
@@ -160,13 +185,15 @@ function ProcessTable({ processes, onSelect }: { processes: ProcessInfo[]; onSel
         <th><button onClick={() => sort("name")}>Process {sortKey === "name" && (descending ? <ArrowDownWideNarrow size={13} /> : <ArrowUpWideNarrow size={13} />)}</button></th>
         <th>State</th><th>PPID</th>
         <th><button onClick={() => sort("cpuPercent")}>CPU {sortKey === "cpuPercent" && (descending ? <ArrowDownWideNarrow size={13} /> : <ArrowUpWideNarrow size={13} />)}</button></th>
-        <th><button onClick={() => sort("memoryBytes")}>Memory {sortKey === "memoryBytes" && (descending ? <ArrowDownWideNarrow size={13} /> : <ArrowUpWideNarrow size={13} />)}</button></th>
-        <th>User</th>
+        <th><button onClick={() => sort("memoryPercent")}>Memory {sortKey === "memoryPercent" && (descending ? <ArrowDownWideNarrow size={13} /> : <ArrowUpWideNarrow size={13} />)}</button></th>
+        <th><button onClick={() => sort("threadCount")}>Threads {sortKey === "threadCount" && (descending ? <ArrowDownWideNarrow size={13} /> : <ArrowUpWideNarrow size={13} />)}</button></th>
+        <th><button onClick={() => sort("startTimeUnix")}>Started {sortKey === "startTimeUnix" && (descending ? <ArrowDownWideNarrow size={13} /> : <ArrowUpWideNarrow size={13} />)}</button></th><th>User</th>
       </tr></thead>
       <tbody>{filtered.slice(page * pageSize, (page + 1) * pageSize).map((item) => <tr key={item.pid} onClick={() => onSelect(item)} tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter") onSelect(item); }}>
-        <td className="mono pid-cell">{item.pid}</td><td className="process-name"><span className="process-glyph">{item.name.slice(0, 1).toUpperCase()}</span><span>{item.name}</span></td>
+        <td className="mono pid-cell">{item.pid}</td><td className="process-name"><span className="process-glyph">{item.name.slice(0, 1).toUpperCase()}</span><span><strong>{item.name}</strong><small title={item.command}>{item.command}</small></span></td>
         <td><Badge tone={item.stateLabel === "Running" ? "green" : item.stateLabel === "Stopped" ? "amber" : "neutral"}>{item.stateLabel}</Badge></td>
-        <td className="mono dim">{item.ppid}</td><td className="mono">{formatPercent(item.cpuPercent)}</td><td className="mono">{formatBytes(item.memoryBytes)}</td><td className="dim"><UserRound size={13} /> {item.user}</td>
+        <td className="mono dim">{item.ppid}</td><td className="mono">{formatPercent(item.cpuPercent)}</td><td className="mono">{formatBytes(item.memoryBytes)}<small className="table-subvalue">{formatPercent(item.memoryPercent)}</small></td>
+        <td className="mono">{item.threadCount ?? "—"}</td><td className="mono">{item.startTimeUnix > 0 ? new Date(item.startTimeUnix * 1000).toLocaleString() : "—"}</td><td className="dim"><UserRound size={13} /> {item.user}</td>
       </tr>)}</tbody>
     </table>{filtered.length === 0 && <EmptyState icon={Search} title="No matching processes" description="Try a different search or state filter." />}</div>
     <footer className="table-footer"><span>Showing {filtered.length ? page * pageSize + 1 : 0}–{Math.min((page + 1) * pageSize, filtered.length)} of {filtered.length}</span>
@@ -175,7 +202,7 @@ function ProcessTable({ processes, onSelect }: { processes: ProcessInfo[]; onSel
   </section>;
 }
 
-function ChartPanel({ title, subtitle, data, dataKey, color, unit = "%" }: { title: string; subtitle: string; data: ResourcePoint[]; dataKey: "cpu" | "memory" | "user" | "system"; color: string; unit?: string }) {
+function ChartPanel({ title, subtitle, data, dataKey, color, unit = "%" }: { title: string; subtitle: string; data: SystemResourcePoint[]; dataKey: Exclude<keyof SystemResourcePoint, "time">; color: string; unit?: string }) {
   const values = data.map((point) => point[dataKey]).filter((value): value is number => value !== null && Number.isFinite(value));
   return <section className="chart-panel"><div className="chart-heading"><div><h3>{title}</h3><span>{subtitle}</span></div><span className="chart-current" style={{ color }}>{values.length ? `${values.at(-1)!.toFixed(1)}${unit}` : "—"}</span></div>
     <div className="chart-canvas">{values.length === 0 ? <div className="chart-empty">Awaiting live samples</div> : <ResponsiveContainer width="100%" height="100%"><LineChart data={data} margin={{ top: 6, right: 8, left: -22, bottom: 0 }}>
@@ -319,50 +346,187 @@ function CreationPage({ notify, onCreated }: { notify: (message: string, type?: 
   </>;
 }
 
-function TelemetryPage({ mode, selectedPid, notify }: { mode: "monitor" | "resources"; selectedPid: number | null; notify: (message: string, type?: Toast["type"]) => void }) {
+function ProcessTelemetryChart({ title, subtitle, data, dataKey, color, unit }: {
+  title: string; subtitle: string; data: ProcessTelemetryPoint[];
+  dataKey: "cpu" | "memory" | "userTime" | "systemTime"; color: string; unit: string;
+}) {
+  const values = data.map((point) => point[dataKey]).filter((value): value is number => value !== null && Number.isFinite(value));
+  return <section className="chart-panel"><div className="chart-heading"><div><h3>{title}</h3><span>{subtitle}</span></div><span className="chart-current" style={{ color }}>{values.length ? `${values.at(-1)!.toFixed(1)}${unit}` : "—"}</span></div>
+    <div className="chart-canvas">{values.length === 0 ? <div className="chart-empty">Start monitoring to collect samples</div> : <ResponsiveContainer width="100%" height="100%"><LineChart data={data} margin={{ top: 6, right: 8, left: -22, bottom: 0 }}>
+      <CartesianGrid stroke="#28302b" strokeDasharray="3 5" vertical={false} /><XAxis dataKey="time" tick={{ fill: "#758078", fontSize: 10 }} axisLine={false} tickLine={false} minTickGap={28} />
+      <YAxis domain={[0, "auto"]} tick={{ fill: "#758078", fontSize: 10 }} axisLine={false} tickLine={false} width={40} />
+      <Tooltip contentStyle={{ background: "#171c18", border: "1px solid #343d36", borderRadius: 6, color: "#e5ebe6", fontSize: 12 }} formatter={(value: number) => [`${value.toFixed(2)}${unit}`, title]} />
+      <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
+    </LineChart></ResponsiveContainer>}</div>
+  </section>;
+}
+
+function LiveProcessPage({ selectedPid }: { selectedPid: number | null }) {
   const [pid, setPid] = useState(selectedPid ? String(selectedPid) : "");
-  const [duration, setDuration] = useState("30");
-  const [running, setRunning] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
-  const [data, setData] = useState<ResourcePoint[]>([]);
-  const [current, setCurrent] = useState<{ name: string; state: string; memoryBytes: number; userTimeNs: number; systemTimeNs: number } | null>(null);
-  useEffect(() => { if (selectedPid) setPid(String(selectedPid)); }, [selectedPid]);
+  const [duration, setDuration] = useState("10");
+  const [monitoring, setMonitoring] = useState<{ pid: number; duration: number; startedAt: number } | null>(null);
+  const [snapshot, setSnapshot] = useState<ProcessResourceSample | null>(null);
+  const [samples, setSamples] = useState<ProcessTelemetryPoint[]>([]);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [complete, setComplete] = useState(false);
+  const [error, setError] = useState("");
   useEffect(() => {
-    if (!running) return;
+    if (selectedPid) setPid(String(selectedPid));
+  }, [selectedPid]);
+  useEffect(() => {
+    if (!monitoring) return;
     let active = true;
-    const sample = async () => {
+    let inFlight = false;
+    const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
-        const result = await request<{ name: string; state: string; cpuPercent: number | null; memoryBytes: number; userTimeNs: number; systemTimeNs: number }>(`/processes/${Number(pid)}/resources`);
-        if (!active) return;
-        const now = new Date();
-        const point = { time: now.toLocaleTimeString([], { hour12: false }), cpu: result.cpuPercent, memory: result.memoryBytes / 1048576, user: result.userTimeNs / 1e9, system: result.systemTimeNs / 1e9 };
-        setCurrent(result); setData((previous) => [...previous.slice(-59), point]);
-      } catch (error) { if (active) { setRunning(false); notify((error as Error).message, "error"); } }
+        const result = await request<ProcessResourceSample>(`/processes/${monitoring.pid}/resources`);
+        if (active) {
+          if (result.pid !== monitoring.pid || !Number.isFinite(result.memoryBytes) || !Number.isFinite(result.userTimeNs) || !Number.isFinite(result.systemTimeNs)) {
+            throw new Error("The backend returned invalid process telemetry.");
+          }
+          setSnapshot(result);
+          setUpdatedAt(result.updatedAt);
+          setError("");
+          setSamples((previous) => [...previous, {
+            time: timeOf(result.updatedAt),
+            cpu: result.cpuPercent,
+            memory: result.memoryBytes / (1024 * 1024),
+            userTime: result.userTimeNs / 1e9,
+            systemTime: result.systemTimeNs / 1e9,
+          }].slice(-(monitoring.duration + 1)));
+        }
+      } catch (requestError) {
+        if (active) setError((requestError as Error).message);
+      } finally {
+        inFlight = false;
+      }
     };
-    void sample();
-    const sampleTimer = window.setInterval(() => void sample(), 1000);
-    const clockTimer = window.setInterval(() => setElapsed((value) => {
-      const next = value + 1;
-      if (mode === "monitor" && next >= Number(duration)) { window.clearInterval(sampleTimer); setRunning(false); }
-      return next;
-    }), 1000);
-    return () => { active = false; window.clearInterval(sampleTimer); window.clearInterval(clockTimer); };
-  }, [running, pid, duration, mode, notify]);
-  function start() {
-    if (!Number.isInteger(Number(pid)) || Number(pid) < 1) { notify("Enter a valid PID.", "error"); return; }
-    if (mode === "monitor" && (!Number.isInteger(Number(duration)) || Number(duration) < 1 || Number(duration) > 3600)) { notify("Duration must be between 1 and 3600 seconds.", "error"); return; }
-    setData([]); setElapsed(0); setCurrent(null); setRunning(true);
+    void refresh();
+    const timer = window.setInterval(() => {
+      if (Date.now() - monitoring.startedAt >= monitoring.duration * 1000) {
+        setMonitoring(null);
+        setComplete(true);
+        return;
+      }
+      void refresh();
+    }, 1000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [monitoring]);
+  function start(event: React.FormEvent) {
+    event.preventDefault();
+    const targetPid = Number(pid.trim());
+    if (!/^\d+$/.test(pid.trim()) || !Number.isSafeInteger(targetPid) || targetPid < 1) {
+      setError("Enter a valid positive PID.");
+      return;
+    }
+    setSamples([]);
+    setSnapshot(null);
+    setUpdatedAt(null);
+    setError("");
+    setComplete(false);
+    setMonitoring({ pid: targetPid, duration: Number(duration), startedAt: Date.now() });
   }
-  const isMonitor = mode === "monitor";
-  return <><PageIntro eyebrow={isMonitor ? "PER-PROCESS STREAM" : "RESOURCE TELEMETRY"} title={isMonitor ? "Live Process Monitoring" : "Resource Monitor"} description={isMonitor ? "Sample a selected process at one-second intervals for a bounded monitoring window." : "Track CPU, memory, and accumulated user/system time from live process counters."} />
-    <section className="data-panel telemetry-controls"><div className="telemetry-form"><label>Target PID<input inputMode="numeric" value={pid} onChange={(event) => setPid(event.target.value)} placeholder="Enter PID" disabled={running} /></label>
-      {isMonitor && <label>Duration<select value={duration} onChange={(event) => setDuration(event.target.value)} disabled={running}><option value="10">10 seconds</option><option value="30">30 seconds</option><option value="60">60 seconds</option><option value="300">5 minutes</option><option value="3600">60 minutes</option></select></label>}
-      {!running ? <button className="button button-primary" onClick={start}><Play size={15} /> Start monitoring</button> : <button className="button button-quiet" onClick={() => setRunning(false)}><Square size={14} /> Stop monitoring</button>}
-    </div>{running && <div className="monitor-running"><span className="pulse-dot" /> Sampling PID {pid} · {elapsed}s{isMonitor ? ` / ${duration}s` : " elapsed"}</div>}</section>
-    {current ? <><div className="detail-strip"><Detail label="Process" value={`${current.name} · PID ${pid}`} /><Detail label="Status" value={current.state} /><Detail label="CPU" value={formatPercent(data.at(-1)?.cpu)} /><Detail label="Memory" value={formatBytes(current.memoryBytes)} /><Detail label="User CPU time" value={`${(current.userTimeNs / 1e9).toFixed(2)} s`} /><Detail label="System CPU time" value={`${(current.systemTimeNs / 1e9).toFixed(2)} s`} /></div>
-      <div className="chart-grid"><ChartPanel title="CPU usage" subtitle="Percent of one CPU core" data={data} dataKey="cpu" color="#a2e66c" /><ChartPanel title="Resident memory" subtitle="RSS from /proc · MiB" data={data} dataKey="memory" color="#55c7bf" unit=" MB" /></div>
-      <div className="chart-grid"><ChartPanel title="User CPU time" subtitle="Accumulated process time" data={data} dataKey="user" color="#e5b761" unit=" s" /><ChartPanel title="System CPU time" subtitle="Accumulated kernel time" data={data} dataKey="system" color="#7e9fe8" unit=" s" /></div>
-    </> : <section className="data-panel"><EmptyState icon={Activity} title="No process selected" description="Choose a PID and start sampling to see live resource measurements." /></section>}
+  const currentCpu = snapshot?.cpuPercent;
+  const currentUserTime = snapshot?.userTimeNs === undefined ? null : snapshot.userTimeNs / 1e9;
+  const currentSystemTime = snapshot?.systemTimeNs === undefined ? null : snapshot.systemTimeNs / 1e9;
+  return <>
+    <PageIntro eyebrow="PER-PROCESS STREAM" title="Live Process Monitoring" description="Sample a selected process at one-second intervals for a bounded monitoring window." action={<span className="updated-chip">{updatedAt ? `Updated ${timeOf(updatedAt)}` : monitoring ? "Sampling…" : "Ready"}</span>} />
+    <section className="data-panel telemetry-controls"><form className="telemetry-form" onSubmit={start}>
+      <label>Target PID<input inputMode="numeric" value={pid} onChange={(event) => setPid(event.target.value)} placeholder="Enter PID" disabled={Boolean(monitoring)} /></label>
+      <label>Duration<select value={duration} onChange={(event) => setDuration(event.target.value)} disabled={Boolean(monitoring)}><option value="10">10 seconds</option><option value="30">30 seconds</option><option value="60">60 seconds</option><option value="300">5 minutes</option></select></label>
+      {monitoring
+        ? <button className="button button-quiet" type="button" onClick={() => { setMonitoring(null); setComplete(false); }}><Square size={14} /> Stop monitoring</button>
+        : <button className="button button-primary"><Play size={14} /> Start monitoring</button>}
+    </form></section>
+    {error && <div className="monitor-error" role="alert"><AlertTriangle size={15} />{error}</div>}
+    <div className="detail-strip process-detail-strip">
+      <Detail label="Process" value={snapshot ? `${snapshot.name} · PID ${snapshot.pid}` : monitoring ? `PID ${monitoring.pid}` : "No process selected"} mono />
+      <Detail label="Status" value={snapshot?.state ?? (monitoring ? "Sampling" : complete ? "Complete" : "Ready")} />
+      <Detail label="CPU" value={formatPercent(currentCpu)} mono />
+      <Detail label="Memory" value={snapshot ? `${(snapshot.memoryBytes / (1024 * 1024)).toFixed(1)} MB` : "—"} mono />
+      <Detail label="User CPU time" value={currentUserTime === null ? "—" : `${currentUserTime.toFixed(2)} s`} mono />
+      <Detail label="System CPU time" value={currentSystemTime === null ? "—" : `${currentSystemTime.toFixed(2)} s`} mono />
+    </div>
+    <div className="chart-grid process-chart-grid">
+      <ProcessTelemetryChart title="CPU usage" subtitle="Percent of one CPU core" data={samples} dataKey="cpu" color="#a2e66c" unit="%" />
+      <ProcessTelemetryChart title="Resident memory" subtitle="RSS from /proc · MB" data={samples} dataKey="memory" color="#55c7bf" unit=" MB" />
+      <ProcessTelemetryChart title="User CPU time" subtitle="Accumulated process time" data={samples} dataKey="userTime" color="#e5b761" unit=" s" />
+      <ProcessTelemetryChart title="System CPU time" subtitle="Accumulated kernel time" data={samples} dataKey="systemTime" color="#7e9fe8" unit=" s" />
+    </div>
+  </>;
+}
+
+function ResourceMonitorPage() {
+  const [snapshot, setSnapshot] = useState<SystemResources | null>(null);
+  const [data, setData] = useState<SystemResourcePoint[]>([]);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    let inFlight = false;
+    const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const result = await request<SystemResources>("/system/resources");
+        if (active) {
+          setSnapshot(result);
+          setError("");
+          setData((previous) => [...previous.slice(-59), {
+            time: timeOf(result.updatedAt),
+            cpu: result.cpuPercent,
+            memory: result.memoryPercent,
+            swap: result.swapPercent,
+            load: result.loadAverage[0] ?? null,
+            diskRead: result.diskReadBytesPerSecond === null ? null : result.diskReadBytesPerSecond / 1024,
+            diskWrite: result.diskWriteBytesPerSecond === null ? null : result.diskWriteBytesPerSecond / 1024,
+            networkReceived: result.networkReceivedBytesPerSecond === null ? null : result.networkReceivedBytesPerSecond / 1024,
+            networkSent: result.networkSentBytesPerSecond === null ? null : result.networkSentBytesPerSecond / 1024,
+          }]);
+        }
+      } catch (requestError) {
+        if (active) setError((requestError as Error).message);
+      } finally {
+        inFlight = false;
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 2000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
+  return <>
+    <PageIntro eyebrow="HOST-WIDE RESOURCE TELEMETRY" title="Resource Monitor" description="System-wide Linux CPU, memory, swap, filesystem, disk I/O, network I/O, and load metrics from /proc and the root filesystem." action={<span className="updated-chip">{snapshot ? `Updated ${timeOf(snapshot.updatedAt)}` : "Connecting…"}</span>} />
+    <div className="monitor-summary">
+      <span><i className="pulse-dot" /> SYSTEM RESOURCES · AUTO REFRESH EVERY 2 SECONDS</span>
+      <span>{snapshot ? `${snapshot.processCount.toLocaleString()} host processes` : "Waiting for host metrics"}</span>
+    </div>
+    {error && <div className="monitor-error" role="alert"><AlertTriangle size={15} />{error}</div>}
+    {snapshot && <>
+      <div className="metric-grid resource-metrics">
+        <Metric label="Total CPU usage" value={formatPercent(snapshot.cpuPercent)} detail="All host CPU time from /proc/stat" icon={Cpu} />
+        <Metric label="Used RAM" value={formatBytes(snapshot.memoryUsedBytes)} detail={`${formatPercent(snapshot.memoryPercent)} of ${formatBytes(snapshot.memoryTotalBytes)}`} icon={HardDrive} />
+        <Metric label="Available RAM" value={formatBytes(snapshot.memoryAvailableBytes)} detail={`${formatBytes(snapshot.memoryFreeBytes)} completely free`} icon={Activity} tone="neutral" />
+        <Metric label="Swap in use" value={formatBytes(snapshot.swapUsedBytes)} detail={`${formatPercent(snapshot.swapPercent)} of ${formatBytes(snapshot.swapTotalBytes)}`} icon={Gauge} tone="amber" />
+        <Metric label="Root filesystem used" value={formatBytes(snapshot.diskUsedBytes)} detail={`${formatBytes(snapshot.diskAvailableBytes)} available of ${formatBytes(snapshot.diskTotalBytes)}`} icon={HardDrive} tone="neutral" />
+        <Metric label="System load average" value={snapshot.loadAverage.map((value) => value.toFixed(2)).join(" · ")} detail="1, 5, and 15 minute averages" icon={Activity} />
+      </div>
+      <section className="data-panel cpu-core-panel">
+        <div className="table-heading"><div><h2>CPU core usage</h2><span>Per-core utilization from Linux /proc/stat</span></div></div>
+        <div className="cpu-core-grid">{snapshot.cpuCores.map((core) => <div className="cpu-core" key={core.name}><span>{core.name.toUpperCase()}</span><strong>{formatPercent(core.cpuPercent)}</strong><div className="meter"><i style={{ width: `${Math.min(core.cpuPercent ?? 0, 100)}%` }} /></div></div>)}</div>
+      </section>
+      <div className="chart-grid">
+        <ChartPanel title="Total CPU usage" subtitle="Host-wide busy CPU time · %" data={data} dataKey="cpu" color="#a2e66c" />
+        <ChartPanel title="RAM usage" subtitle="Used physical memory · %" data={data} dataKey="memory" color="#55c7bf" />
+        <ChartPanel title="Swap usage" subtitle="Used swap space · %" data={data} dataKey="swap" color="#e5b761" />
+        <ChartPanel title="System load average" subtitle="One-minute host load average" data={data} dataKey="load" color="#7e9fe8" unit="" />
+        <ChartPanel title="Disk reads" subtitle="Host block-device read · KiB/s" data={data} dataKey="diskRead" color="#a2e66c" unit=" KiB/s" />
+        <ChartPanel title="Disk writes" subtitle="Host block-device write · KiB/s" data={data} dataKey="diskWrite" color="#e5b761" unit=" KiB/s" />
+        <ChartPanel title="Network received" subtitle="Non-loopback host traffic · KiB/s" data={data} dataKey="networkReceived" color="#55c7bf" unit=" KiB/s" />
+        <ChartPanel title="Network sent" subtitle="Non-loopback host traffic · KiB/s" data={data} dataKey="networkSent" color="#7e9fe8" unit=" KiB/s" />
+      </div>
+    </>}
+    {!snapshot && !error && <section className="data-panel"><EmptyState icon={Gauge} title="Loading system resources" description="Reading system counters directly from Linux /proc and the root filesystem." /></section>}
   </>;
 }
 
@@ -432,23 +596,125 @@ function ProcessTree({ processes, selectedPid, onSelect }: { processes: ProcessI
 function PriorityPage({ selectedPid, notify }: { selectedPid: number | null; notify: (message: string, type?: Toast["type"]) => void }) {
   const [pid, setPid] = useState(selectedPid ? String(selectedPid) : "");
   const [priority, setPriority] = useState<number | null>(null);
+  const [policy, setPolicy] = useState<SchedulingPolicy | null>(null);
+  const [selectedPolicy, setSelectedPolicy] = useState<SettableSchedulingPolicy>("normal");
+  const [actionError, setActionError] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => { if (selectedPid) setPid(String(selectedPid)); }, [selectedPid]);
-  async function readPriority() {
-    try { const result = await request<{ priority: number }>(`/processes/${Number(pid)}/priority`); setPriority(result.priority); }
-    catch (error) { notify((error as Error).message, "error"); }
-  }
-  async function adjust(delta: -1 | 1) {
+  useEffect(() => {
+    if (selectedPid) {
+      setPid(String(selectedPid));
+      setPriority(null);
+      setPolicy(null);
+      setActionError("");
+    }
+  }, [selectedPid]);
+  async function readSettings() {
+    const targetPid = Number(pid.trim());
+    if (!/^\d+$/.test(pid.trim()) || !Number.isSafeInteger(targetPid) || targetPid < 1) {
+      notify("Enter a valid positive PID.", "error");
+      return;
+    }
     setBusy(true);
-    try { const result = await request<{ priority: number }>(`/processes/${Number(pid)}/priority`, { method: "POST", body: JSON.stringify({ delta }) }); setPriority(result.priority); notify(`Nice value is now ${result.priority}.`, "success"); }
-    catch (error) { notify((error as Error).message, "error"); }
+    try {
+      const [priorityResult, schedulingResult] = await Promise.all([
+        request<{ pid: number; priority: number }>(`/processes/${targetPid}/priority`),
+        request<{ pid: number; policy: SchedulingPolicy }>(`/processes/${targetPid}/scheduling`),
+      ]);
+      if (priorityResult.pid !== targetPid || !Number.isInteger(priorityResult.priority) || priorityResult.priority < -20 || priorityResult.priority > 19) {
+        throw new Error("The backend returned an invalid Linux nice value.");
+      }
+      if (schedulingResult.pid !== targetPid || !["normal", "batch", "idle", "other"].includes(schedulingResult.policy)) {
+        throw new Error("The backend returned an invalid Linux scheduling policy.");
+      }
+      setPriority(priorityResult.priority);
+      setPolicy(schedulingResult.policy);
+      setActionError("");
+      if (schedulingResult.policy === "normal" || schedulingResult.policy === "batch") {
+        setSelectedPolicy(schedulingResult.policy);
+      }
+    } catch (error) {
+      setPriority(null);
+      setPolicy(null);
+      const message = (error as Error).message;
+      setActionError(message);
+      notify(message, "error");
+    }
     finally { setBusy(false); }
   }
-  return <><PageIntro eyebrow="GETPRIORITY + SETPRIORITY" title="Priority & Scheduling" description="Read and adjust the Linux nice value. Lower values request higher scheduling priority and may require privileges." />
-    <section className="data-panel priority-panel"><form className="pid-form" onSubmit={(event) => { event.preventDefault(); void readPriority(); }}><label>Target PID<input inputMode="numeric" value={pid} onChange={(event) => setPid(event.target.value)} placeholder="Enter PID" /></label><button className="button button-quiet"><Search size={15} /> View priority</button></form>
-      <div className="priority-display"><span className="eyebrow">CURRENT NICE VALUE</span><strong>{priority ?? "—"}</strong><span>{priority === null ? "Read a process priority to begin" : priority < 0 ? "Higher scheduling priority" : priority > 0 ? "Lower scheduling priority" : "Default scheduling priority"}</span></div>
-      <div className="priority-actions"><button className="button button-quiet" disabled={busy || priority === null} onClick={() => void adjust(-1)}><ArrowUpWideNarrow size={16} /> Increase priority <small>nice −1</small></button><button className="button button-quiet" disabled={busy || priority === null} onClick={() => void adjust(1)}><ArrowDownWideNarrow size={16} /> Decrease priority <small>nice +1</small></button></div>
-      <p className="muted-note">Every adjustment is limited to one nice step and the backend reads the resulting value back from Linux.</p>
+  async function adjust(delta: -1 | 1) {
+    const targetPid = Number(pid.trim());
+    if (!/^\d+$/.test(pid.trim()) || !Number.isSafeInteger(targetPid) || targetPid < 1) {
+      notify("Enter a valid positive PID.", "error");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await request<{ pid: number; priority: number }>(`/processes/${targetPid}/priority`, { method: "POST", body: JSON.stringify({ delta }) });
+      if (result.pid !== targetPid || !Number.isInteger(result.priority) || result.priority < -20 || result.priority > 19) {
+        throw new Error("The backend returned an invalid Linux nice value.");
+      }
+      setPriority(result.priority);
+      setActionError("");
+      notify(`Linux reports the nice value is now ${result.priority}.`, "success");
+    }
+    catch (error) {
+      const message = (error as Error).message;
+      setActionError(message);
+      notify(message, "error");
+    }
+    finally { setBusy(false); }
+  }
+  async function applyScheduling() {
+    const targetPid = Number(pid.trim());
+    if (!/^\d+$/.test(pid.trim()) || !Number.isSafeInteger(targetPid) || targetPid < 1) {
+      notify("Enter a valid positive PID.", "error");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await request<{ pid: number; policy: SchedulingPolicy }>(`/processes/${targetPid}/scheduling`, {
+        method: "POST", body: JSON.stringify({ policy: selectedPolicy }),
+      });
+      if (result.pid !== targetPid || result.policy !== selectedPolicy) {
+        throw new Error("Linux did not confirm the requested scheduling policy.");
+      }
+      setPolicy(result.policy);
+      setActionError("");
+      notify(`PID ${targetPid} now uses the ${result.policy} scheduling policy.`, "success");
+    } catch (error) {
+      const message = (error as Error).message;
+      setActionError(message);
+      notify(message, "error");
+    }
+    finally { setBusy(false); }
+  }
+  return <><PageIntro eyebrow="GETPRIORITY + SCHED_SETSCHEDULER" title="Priority & Scheduling" description="Read or adjust the Linux nice value and choose a normal or batch scheduling policy for a process." />
+    <section className="data-panel priority-panel">
+      <form className="pid-form priority-target-form" onSubmit={(event) => { event.preventDefault(); void readSettings(); }}>
+        <label>Target PID<input inputMode="numeric" value={pid} onChange={(event) => { setPid(event.target.value); setPriority(null); setPolicy(null); setActionError(""); }} placeholder="Enter PID" disabled={busy} /></label>
+        <button className="button button-quiet" disabled={busy}>{busy ? <LoaderCircle size={15} className="spin" /> : <Search size={15} />} Read scheduling settings</button>
+      </form>
+      {actionError && <div className="priority-error" role="alert"><AlertTriangle size={15} /><span>{actionError}{actionError.toLowerCase().includes("permission") && !actionError.toLowerCase().includes("cap_sys_nice") ? " Use a process owned by your account; system processes such as PID 1 are protected." : ""}</span></div>}
+      <div className="priority-settings-grid">
+        <section className="priority-setting"><div className="panel-title"><div><span className="eyebrow">NICE · -20 TO 19</span><h2>Process priority</h2></div><ArrowUpWideNarrow size={17} /></div>
+          <div className="priority-value"><strong>{priority ?? "—"}</strong><span>{priority === null ? "Read process settings to begin" : priority < 0 ? "Higher priority than default" : priority > 0 ? "Lower priority than default" : "Default priority"}</span></div>
+          <div className="priority-actions"><button className="button button-quiet" disabled={busy || priority === null || priority <= -20} onClick={() => void adjust(-1)}><ArrowUpWideNarrow size={15} /> Raise priority <small>nice −1</small></button><button className="button button-quiet" disabled={busy || priority === null || priority >= 19} onClick={() => void adjust(1)}><ArrowDownWideNarrow size={15} /> Lower priority <small>nice +1</small></button></div>
+        </section>
+        <section className="priority-setting"><div className="panel-title"><div><span className="eyebrow">SCHED_SETSCHEDULER</span><h2>Scheduling policy</h2></div><Timer size={17} /></div>
+          <div className="policy-current"><span>Current policy</span><strong>{policy === null ? "—" : policy === "other" ? "Other / real-time" : policy[0].toUpperCase() + policy.slice(1)}</strong></div>
+          {policy === "idle" && <div className="policy-lock-note" role="status">Linux requires elevated privileges to switch an existing SCHED_IDLE process back to a normal policy. This control is disabled to avoid an unprivileged change that cannot be undone.</div>}
+          <form className="policy-form" onSubmit={(event) => { event.preventDefault(); void applyScheduling(); }}>
+            <label>Apply policy<select value={selectedPolicy} onChange={(event) => {
+              const next = event.target.value;
+              if (next === "normal" || next === "batch") setSelectedPolicy(next);
+            }} disabled={busy || policy === null || policy === "idle"}>
+              <option value="normal">Normal (SCHED_OTHER)</option><option value="batch">Batch (SCHED_BATCH)</option>
+            </select></label>
+            <button className="button button-primary" disabled={busy || policy === null || policy === "idle"}>{busy ? <LoaderCircle size={15} className="spin" /> : <Settings2 size={15} />} Apply policy</button>
+          </form>
+        </section>
+      </div>
+      <p className="muted-note priority-note">Use a PID owned by your account; system processes such as PID 1 are protected. Raising priority (lowering the nice value) may require Linux privileges. Normal and Batch policies can be switched without real-time scheduler privileges.</p>
     </section>
   </>;
 }
@@ -601,13 +867,13 @@ function App() {
         {page === "inspector" && <ProcessInspector processes={processes} selectedPid={selectedPid} setSelectedPid={setSelectedPid} notify={notify} goTo={setPage} />}
         {page === "control" && <ProcessControl selectedPid={selectedPid} notify={notify} onChanged={() => void refreshData()} />}
         {page === "creation" && <CreationPage notify={notify} onCreated={(pid) => { setSelectedPid(pid); void refreshData(); }} />}
-        {page === "monitor" && <TelemetryPage mode="monitor" selectedPid={selectedPid} notify={notify} />}
-        {page === "resources" && <TelemetryPage mode="resources" selectedPid={selectedPid} notify={notify} />}
+        {page === "monitor" && <LiveProcessPage selectedPid={selectedPid} />}
+        {page === "resources" && <ResourceMonitorPage />}
         {page === "tree" && <ProcessTree processes={processes} selectedPid={selectedPid} onSelect={selectProcess} />}
         {page === "priority" && <PriorityPage selectedPid={selectedPid} notify={notify} />}
         {page === "watchdog" && <WatchdogPage notify={notify} />}
         {page === "lifecycle" && <LifecyclePage notify={notify} />}
-        <footer className="page-footer"><span>Linux Process Monitoring and Control System</span><span>Data source <code>/proc</code> · C system layer</span></footer>
+        <footer className="page-footer"><span>Linux Process Monitoring and Control System</span><span>Data source <code>/proc</code> · Linux system APIs</span></footer>
       </div>
     </main>
     <ToastStack items={toasts} />

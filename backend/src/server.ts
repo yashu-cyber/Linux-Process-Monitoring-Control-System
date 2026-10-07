@@ -7,6 +7,7 @@ import {
   createProcess,
   createdProcesses,
   getPriority,
+  getScheduling,
   getWatchdog,
   inspectProcess,
   lifecycleState,
@@ -16,7 +17,9 @@ import {
   shutdownApplication,
   startLifecycle,
   startWatchdog,
+  setScheduling,
   systemStatus,
+  systemResources,
   stopWatchdog,
 } from "./processMonitorService.js";
 
@@ -24,6 +27,10 @@ const app = express();
 const port = Number(process.env.PORT ?? 3001);
 app.use(cors({ origin: ["http://localhost:5173", "http://127.0.0.1:5173"] }));
 app.use(express.json({ limit: "16kb" }));
+app.use("/api", (_request, response, next) => {
+  response.setHeader("Cache-Control", "no-store");
+  next();
+});
 
 function asyncRoute(handler: (request: Request, response: Response) => Promise<unknown> | unknown) {
   return (request: Request, response: Response, next: NextFunction) => {
@@ -42,6 +49,7 @@ function routeParam(value: string | string[] | undefined): string {
 }
 
 app.get("/api/system/status", asyncRoute(async (_request, response) => response.json(await systemStatus())));
+app.get("/api/system/resources", asyncRoute(async (_request, response) => response.json(await systemResources())));
 app.get("/api/processes", asyncRoute(async (_request, response) => response.json({ processes: await listProcesses() })));
 app.get("/api/processes/created", asyncRoute(async (_request, response) => response.json(await createdProcesses())));
 app.get("/api/processes/:pid", asyncRoute(async (request, response) => response.json(await inspectProcess(numberParam(routeParam(request.params.pid))))));
@@ -56,6 +64,12 @@ app.get("/api/process-tree", asyncRoute(async (_request, response) => response.j
 app.get("/api/processes/:pid/priority", asyncRoute(async (request, response) => response.json(await getPriority(numberParam(routeParam(request.params.pid))))));
 app.post("/api/processes/:pid/priority", asyncRoute(async (request, response) => {
   response.json(await adjustPriority(numberParam(routeParam(request.params.pid)), request.body?.delta));
+}));
+app.get("/api/processes/:pid/scheduling", asyncRoute(async (request, response) => {
+  response.json(await getScheduling(numberParam(routeParam(request.params.pid))));
+}));
+app.post("/api/processes/:pid/scheduling", asyncRoute(async (request, response) => {
+  response.json(await setScheduling(numberParam(routeParam(request.params.pid)), request.body?.policy));
 }));
 app.post("/api/watchdog", asyncRoute(async (request, response) => {
   response.status(201).json(await startWatchdog(Number(request.body?.pid), Number(request.body?.threshold), Number(request.body?.duration)));

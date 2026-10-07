@@ -88,16 +88,7 @@ The newly created process can then be discovered through the Process Dashboard a
 
 ### 5. Live Process Monitoring
 
-The Live Process Monitoring module periodically checks a selected process while it is running.
-
-The user specifies:
-
-- Process ID
-- Monitoring duration
-
-The application performs periodic checks and displays the process status during the monitoring period.
-
-This allows the user to observe process behavior while the process is active.
+The Live Process Monitoring page accepts a target PID and a bounded duration, then samples that process once per second. It displays current state, CPU usage, resident memory, user CPU time, and system CPU time alongside charts for each metric. Monitoring stops automatically when the selected window expires.
 
 ### 6. Process Tree
 
@@ -111,6 +102,14 @@ The Linux implementation is intended to use:
 - Parent-child process relationships
 
 The current development version provides the process-tree interface and process-list foundation. Complete hierarchical PID/PPID traversal is reserved for the Linux-specific implementation.
+
+### 7. Resource Monitor
+
+The Resource Monitor is a separate host-wide view; it does not use a selected PID or sum a filtered process table. It reads CPU counters, RAM and swap statistics, disk I/O, and network I/O from Linux system interfaces such as `/proc/stat`, `/proc/meminfo`, `/proc/diskstats`, and `/proc/net/dev`. It also displays root-filesystem capacity and system load averages. CPU, memory, swap, disk, network, and load charts refresh automatically.
+
+### 8. Priority & Scheduling
+
+Priority controls read the process nice value from Linux and adjust it by one step. Scheduling controls read and apply the `SCHED_OTHER` and `SCHED_BATCH` policies through Linux scheduler APIs. `SCHED_IDLE` is displayed if already set, but is not offered because returning an unprivileged process from idle scheduling can require `CAP_SYS_NICE`. The backend reads each value back after a change; lower nice values require sufficient Linux privileges, and permission errors and value limits are reported instead of showing a false success.
 
 ## Operating System Concepts Demonstrated
 

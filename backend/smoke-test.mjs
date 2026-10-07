@@ -96,6 +96,15 @@ try {
   const adjusted = await call(`/processes/${pid}/priority`, "POST", { delta: 1 });
   check("priority update reads back the resulting nice value", adjusted.status === 200 && adjusted.data.priority === priority.data.priority + 1);
 
+  const scheduling = await call(`/processes/${pid}/scheduling`);
+  check("scheduling view reads the Linux process policy", scheduling.status === 200 && ["normal", "batch", "idle", "other"].includes(scheduling.data.policy));
+  const changedScheduling = await call(`/processes/${pid}/scheduling`, "POST", { policy: "batch" });
+  check("scheduling update applies and reads back the batch policy", changedScheduling.status === 200 && changedScheduling.data.policy === "batch");
+  const restoredScheduling = await call(`/processes/${pid}/scheduling`, "POST", { policy: scheduling.data.policy === "other" ? "normal" : scheduling.data.policy });
+  check("scheduling policy can be restored after an update", restoredScheduling.status === 200 && restoredScheduling.data.policy === (scheduling.data.policy === "other" ? "normal" : scheduling.data.policy));
+  const unsafeScheduling = await call(`/processes/${pid}/scheduling`, "POST", { policy: "idle" });
+  check("unprivileged SCHED_IDLE changes are rejected to avoid stranding the process", unsafeScheduling.status === 400);
+
   const permission = await call("/processes/1/priority", "POST", { delta: -1 });
   check("privileged priority change returns a clear result", permission.status === 403 || permission.status === 200);
 
